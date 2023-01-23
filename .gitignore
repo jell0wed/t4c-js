@@ -3,6 +3,7 @@ Thumbs.db
 .DS_Store
 .vscode
 
+gamefiles/
 
 # Vendors
 node_modules/
