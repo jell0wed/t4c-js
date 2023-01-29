@@ -9,20 +9,10 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using TFCGameFilesDecryption.decrypt_utils;
 
 namespace TFCGameFilesDecryption
 {
-    struct DIDIndexFileHeader {
-        public string strChksumMd5; // len 33
-        public ulong ulUnpackSize;
-        public ulong ulPackSize;
-        public byte uchChksum;
-        public int indicesCount;
-
-        public byte[] uncompressedData;
-    }
-
-    
     struct DIDIndexHeader {
         public const int NAME_LENGTH = 64;
         public const int PATH_LENGTH = 256;
@@ -138,7 +128,7 @@ namespace TFCGameFilesDecryption
                 spriteHeader.dwDataUnpack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xDDCCBBAA);
                 spriteHeader.dwDataPack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xAABBCCDD);
 
-                DDALoadedSprite loadedSprite = new DDALoadedSprite;
+                DDALoadedSprite loadedSprite = new DDALoadedSprite();
                 switch (spriteHeader.dwCompType) {
                     case COMP_DD:
                         loadedSprite = this.loadSprite_Raw(header, spriteHeader);
@@ -256,15 +246,14 @@ namespace TFCGameFilesDecryption
         private void loadIndices() {
             this.indicesMap = new Dictionary<string, DIDIndexHeader>();
 
-            DIDIndexFileHeader indexHeader = new DIDIndexFileHeader();
-            byte[] uncompressedData = this.loadIndexHeader(ref indexHeader);
-            Logger.Info($"Loading {indexHeader.indicesCount} indices...");
+            V2GameFile indexGameFile = this.loadIndexGamefile();
+            Logger.Info($"Loading {indexGameFile.indicesCount} indices...");
 
             int read = 0;
-            using (var uncompressedDataStream = new MemoryStream(uncompressedData))
+            using (var uncompressedDataStream = new MemoryStream(indexGameFile.uncompressedData))
             {
-                this.indexDatabase = new DIDIndexHeader[indexHeader.indicesCount];
-                for (var i = 0; i < indexHeader.indicesCount; i++)
+                this.indexDatabase = new DIDIndexHeader[indexGameFile.indicesCount];
+                for (var i = 0; i < indexGameFile.indicesCount; i++)
                 {
                     // create new header
                     DIDIndexHeader currentIndexHeader = new DIDIndexHeader();
@@ -308,90 +297,20 @@ namespace TFCGameFilesDecryption
             }
         }
 
-        private byte[] loadIndexHeader(ref DIDIndexFileHeader loadHeader) {
+        private V2GameFile loadIndexGamefile() {
             if (!File.Exists(Path.Combine(this.gamefilePath, DID_FILE))) { throw new Exception("Index data file does not exists."); }
 
+            V2GameFile gamefile = new V2GameFile();
+
             Logger.Debug($"Loading ddi file index header {Path.Combine(this.gamefilePath, DID_FILE)}");
-            using (Stream src = File.OpenRead(Path.Combine(this.gamefilePath, DID_FILE)))
-            {
-                int read = 0;
+            gamefile = V2GamefilesDecryptionUtils.DecryptV2Gamefile(Path.Combine(this.gamefilePath, DID_FILE));
+            gamefile.uncompressedData = gamefile.uncompressedData.Select(b => (byte)(b ^ XOR_DECRYPTION_KEY)).ToArray(); // apply XOR key for index data
 
-                // first 16 bytes are first part of md5 checksum
-                byte[] chkSumMd5Part1 = new byte[16];
-                read = src.Read(chkSumMd5Part1, 0, 16);
-                Debug.Assert(read == 16, "unable to read first part of checksum");
-
-                // second 4 byte is unpackSize
-                byte[] unpackSize = new byte[4];
-                read = src.Read(unpackSize, 0, 4);
-                Debug.Assert(read == 4, "unable to read unpack size");
-
-                // third 4 byte is packSize
-                byte[] packSize = new byte[4];
-                read = src.Read(packSize, 0, 4);
-                Debug.Assert(read == 4, "unable to read pack size");
-
-                // next 17 bytes are second part of md5 chksum
-                byte[] chkSumMd5Part2 = new byte[17];
-                read = src.Read(chkSumMd5Part2, 0, 17);
-                Debug.Assert(read == 17, "unable to read second part of checksum");
-
-                // checksum
-                loadHeader.strChksumMd5 = System.Text.Encoding.ASCII.GetString(chkSumMd5Part1.Concat(chkSumMd5Part2).Take(32).ToArray());
-                // unpack size
-                loadHeader.ulUnpackSize = BitConverter.ToUInt32(unpackSize, 0);
-                // pack size
-                loadHeader.ulPackSize = BitConverter.ToUInt32(packSize, 0);
-
-                // read compressed data
-                byte[] compressedData = new byte[loadHeader.ulPackSize];
-                int len = Convert.ToInt32(loadHeader.ulPackSize);
-                read = src.Read(compressedData, 0, Convert.ToInt32(loadHeader.ulPackSize)); // read the compressed (packed size data)
-                Debug.Assert(read == Convert.ToInt32(loadHeader.ulPackSize), "unable to read compressed data");
-
-                // read uch chksum
-                byte[] uchChksum = new byte[1];
-                read = src.Read(uchChksum, 0, 1);
-                Debug.Assert(read == 1, "unable to read uch chksum");
-
-                // uch chksum
-                loadHeader.uchChksum = uchChksum[0];
-
-                byte uchVal = this.calculateUchVal(compressedData);
-                Debug.Assert(loadHeader.uchChksum == uchVal, "uch checksum validation failed");
-
-                // decompress the compressed data using zlib
-                byte[] uncompressedData = new byte[loadHeader.ulUnpackSize];
-                using (var deflatedStream = Zlib.Deflate(compressedData))
-                {
-                    read = deflatedStream.Read(uncompressedData, 0, Convert.ToInt32(loadHeader.ulUnpackSize));
-                    Debug.Assert(read == Convert.ToInt32(loadHeader.ulUnpackSize), "unable to unpack deflated stream");
-                }
-
-                // compute md5 of uncompressed data
-                string computedHash = "";
-                using (var md5 = System.Security.Cryptography.MD5.Create())
-                {
-                    computedHash = string.Join("", md5.ComputeHash(new MemoryStream(uncompressedData)).Select(s => s.ToString("x2")));
-                }
-                Debug.Assert(computedHash == loadHeader.strChksumMd5, "uncompressed data md5 checksum validate failed");
-                uncompressedData = uncompressedData.Select(b => (byte)(b ^ XOR_DECRYPTION_KEY)).ToArray(); // apply XOR key for index data
-
-                loadHeader.indicesCount = Convert.ToInt32(loadHeader.ulUnpackSize) / DIDIndexHeader.STRUCT_SIZE_BYTES;
-                return uncompressedData;
-            }
+            gamefile.indicesCount = Convert.ToInt32(gamefile.ulUnpackSize) / DIDIndexHeader.STRUCT_SIZE_BYTES;
+            return gamefile;
         }
 
-        private byte calculateUchVal(byte[] compressedData)
-        {
-            byte chkSumResult = 0x00;
-            for (int i = 0; i < compressedData.Length - 1; i++)
-            {
-                chkSumResult += compressedData[i];
-            }
-            chkSumResult = (byte)(0b100000000 - chkSumResult);
-            return chkSumResult;
-        }
+        
     }
 
     
