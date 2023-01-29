@@ -92,7 +92,8 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="decrypt-utils\V2GamefilesDecryptionUtils.cs" />
+    <Compile Include="utils\StreamUtils.cs" />
+    <Compile Include="utils\V2GamefilesDecryptionUtils.cs" />
     <Compile Include="RandomTable.cs" />
     <Compile Include="TFCDDADatabase.cs" />
     <Compile Include="Program.cs" />

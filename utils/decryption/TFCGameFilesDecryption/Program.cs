@@ -10,13 +10,15 @@ namespace TFCGameFilesDecryption
     {
         static void Main(string[] args)
         {
-            /*TFCDDADatabase didDatabase = new TFCDDADatabase("..\\..\\..\\..\\..\\gamefiles\\");
+            TFCPaletteManager paletteManager = new TFCPaletteManager("..\\..\\..\\..\\..\\gamefiles\\");
+            paletteManager.DecryptPalette();
+
+            TFCDDADatabase didDatabase = new TFCDDADatabase(paletteManager, "..\\..\\..\\..\\..\\gamefiles\\");
             didDatabase.Decrypt();
 
-            didDatabase.LoadSprite("Black Tile");*/
+            didDatabase.LoadSprite("NetWorkAccess");
 
-            TFCPaletteManager palette = new TFCPaletteManager("..\\..\\..\\..\\..\\gamefiles\\");
-            palette.DecryptPalette();
+            
         }
     }
 }

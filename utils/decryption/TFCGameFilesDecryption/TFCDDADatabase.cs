@@ -10,6 +10,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using TFCGameFilesDecryption.decrypt_utils;
+using TFCGameFilesDecryption.utils;
 
 namespace TFCGameFilesDecryption
 {
@@ -64,6 +65,8 @@ namespace TFCGameFilesDecryption
         private const int XOR_DECRYPTION_KEY = 0x99;
         private const int DDA_FILES_COUNT = 20;
 
+        private TFCPaletteManager paletteManager;
+
         private RandomTable XOR;
         private readonly string gamefilePath;
 
@@ -71,8 +74,9 @@ namespace TFCGameFilesDecryption
         private Dictionary<string, DIDIndexHeader> indicesMap;
         private Dictionary<string, byte[]> loadedDDAs;
 
-        public TFCDDADatabase(string _gamefilePath) 
+        public TFCDDADatabase(TFCPaletteManager paletteManager, string _gamefilePath) 
         {
+            this.paletteManager = paletteManager;
             this.gamefilePath = _gamefilePath;
             this.XOR = new RandomTable(4096);
             this.XOR.CreateRandom(0, 255, 666666);
@@ -115,18 +119,18 @@ namespace TFCGameFilesDecryption
 
                 // load sprite header
                 DDASpriteHeader spriteHeader = new DDASpriteHeader();
-                spriteHeader.dwCompType = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAAA);
-                spriteHeader.flag1 = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1458);
-                spriteHeader.dwWidth = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1234);
-                spriteHeader.dwHeight = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x6242);
-                spriteHeader.shOffX1 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x2355);
-                spriteHeader.shOffY1 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xF6C3);
-                spriteHeader.shOffX2 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAF3);
-                spriteHeader.shOffY2 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAAA);
-                spriteHeader.ushTransparency = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x4321);
-                spriteHeader.ushTransColor = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1234);
-                spriteHeader.dwDataUnpack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xDDCCBBAA);
-                spriteHeader.dwDataPack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xAABBCCDD);
+                spriteHeader.dwCompType = (ushort)(BitConverter.ToUInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAAA);
+                spriteHeader.flag1 = (ushort)(BitConverter.ToUInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1458);
+                spriteHeader.dwWidth = (ushort)(BitConverter.ToUInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1234);
+                spriteHeader.dwHeight = (ushort)(BitConverter.ToUInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x6242);
+                spriteHeader.shOffX1 = (short)(BitConverter.ToInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x2355);
+                spriteHeader.shOffY1 = (short)(BitConverter.ToInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xF6C3);
+                spriteHeader.shOffX2 = (short)(BitConverter.ToInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAF3);
+                spriteHeader.shOffY2 = (short)(BitConverter.ToInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAAA);
+                spriteHeader.ushTransparency = (ushort)(BitConverter.ToUInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x4321);
+                spriteHeader.ushTransColor = (ushort)(BitConverter.ToUInt16(StreamUtils.readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1234);
+                spriteHeader.dwDataUnpack = (ulong)(BitConverter.ToUInt32(StreamUtils.readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xDDCCBBAA);
+                spriteHeader.dwDataPack = (ulong)(BitConverter.ToUInt32(StreamUtils.readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xAABBCCDD);
 
                 DDALoadedSprite loadedSprite = new DDALoadedSprite();
                 switch (spriteHeader.dwCompType) {
@@ -150,17 +154,28 @@ namespace TFCGameFilesDecryption
 
         private void exportSprite(DDALoadedSprite loadedSprite) {
             // export the sprite into a bitmap file
-            Bitmap bmp = new Bitmap(loadedSprite.spriteHeader.dwWidth, loadedSprite.spriteHeader.dwHeight, PixelFormat.Format32bppRgb);
-            int cIndex = 0;
-            for (var i = 0; i < loadedSprite.spriteHeader.dwWidth; i++) {
-                for (var j = 0; j < loadedSprite.spriteHeader.dwHeight; j++) {
-                    byte red = (byte)(loadedSprite.loadedChunk[cIndex + j] * 3);
-                    byte green = (byte)(loadedSprite.loadedChunk[cIndex + j + 1] * 3);
-                    byte blue = (byte)(loadedSprite.loadedChunk[cIndex + j + 2] * 3);
+            using (Bitmap bmp = new Bitmap(loadedSprite.spriteHeader.dwWidth, loadedSprite.spriteHeader.dwHeight, PixelFormat.Format16bppRgb555)) {
+                DPDPalette? palette = this.paletteManager.GetPal("", 1);
 
+                if (palette == null) { throw new Exception("Unable to load default palette"); }
 
+                int cIndex = 0;
+                byte wPal, wRed, wGreen, wBlue, wColor;
+                for (var i = 0; i < loadedSprite.spriteHeader.dwHeight; i++)
+                {
+                    for (var j = 0; j < loadedSprite.spriteHeader.dwWidth; j++)
+                    {
+                        wPal = (byte)(loadedSprite.loadedChunk[cIndex + j] * 3);
+                        wRed = (byte)(palette.Value.lpSpritePal[wPal]);
+                        wGreen = (byte)(palette.Value.lpSpritePal[wPal + 1]);
+                        wBlue = (byte)(palette.Value.lpSpritePal[wPal + 2]);
+
+                        bmp.SetPixel(j, i, Color.FromArgb((byte)(wRed), (byte)(wGreen), (byte)(wBlue)));
+                    }
+                    cIndex += loadedSprite.spriteHeader.dwWidth;
                 }
-                cIndex += loadedSprite.spriteHeader.dwWidth;
+
+                bmp.Save($"{loadedSprite.indexHeader.name}.bmp");
             }
         }
 
@@ -177,12 +192,12 @@ namespace TFCGameFilesDecryption
             if (spriteHeader.dwWidth > 180 || spriteHeader.dwHeight > 180)
             {
                 // sprite is compressed
-                byte[] compressedChunkBuf = readBytes(new MemoryStream(ddaSegmentBuf), 0, Convert.ToInt32(spriteHeader.dwDataPack));
-                uncompressedChunkBuf = readBytes(Zlib.Deflate(compressedChunkBuf), 0, Convert.ToInt32(spriteHeader.dwDataUnpack)); // never hit??
+                byte[] compressedChunkBuf = StreamUtils.readBytes(new MemoryStream(ddaSegmentBuf), 0, Convert.ToInt32(spriteHeader.dwDataPack));
+                uncompressedChunkBuf = StreamUtils.readBytes(Zlib.Deflate(compressedChunkBuf), 0, Convert.ToInt32(spriteHeader.dwDataUnpack)); // never hit??
             }
             else
             {
-                uncompressedChunkBuf = readBytes(new MemoryStream(ddaSegmentBuf), 0, Convert.ToInt32(spriteHeader.dwDataPack)); // shouldnt this be data unpack?? 
+                uncompressedChunkBuf = StreamUtils.readBytes(new MemoryStream(ddaSegmentBuf), 0, Convert.ToInt32(spriteHeader.dwDataPack)); // shouldnt this be data unpack?? 
             }
 
             loadedSprite.loadedChunk = uncompressedChunkBuf;
@@ -213,14 +228,6 @@ namespace TFCGameFilesDecryption
 
                 return segmentBuf;
             }
-        }
-
-        private static byte[] readBytes(Stream s, int offset, int bufSize) {
-            byte[] resultBuf = new byte[bufSize];
-            int read = s.Read(resultBuf, offset, bufSize);
-            Debug.Assert(read == bufSize, "unable to read up to bufSize");
-
-            return resultBuf;
         }
 
         private void loadDDAs() {
