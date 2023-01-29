@@ -10,7 +10,7 @@ namespace TFCGameFilesDecryption
     {
         static void Main(string[] args)
         {
-            TFCDIDDatabase didDatabase = new TFCDIDDatabase("..\\..\\..\\..\\..\\gamefiles\\v2datai.did", "");
+            TFCDDADatabase didDatabase = new TFCDDADatabase("..\\..\\..\\..\\..\\gamefiles\\");
             didDatabase.Decrypt();
         }
     }

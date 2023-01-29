@@ -34,23 +34,57 @@ namespace TFCGameFilesDecryption
         public uint dwThisPosIndex;
     }
 
-    class TFCDIDDatabase
+    class TFCDDADatabase
     {
+        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+
+        private const string DID_FILE = "V2DataI.did";
+        private const string DDA_FILE = "V2Data";
+
         private const int XOR_DECRYPTION_KEY = 0x99;
-        private readonly string _indexDatabasePath;
-        private readonly string _databaseDataPrefixPath;
+        private const int DDA_FILES_COUNT = 20;
+
+        private readonly string gamefilePath;
 
         private DIDIndexHeader[] indexDatabase;
+        private Dictionary<string, DIDIndexHeader> indexMap;
+        private Dictionary<string, byte[]> loadedDDAs;
 
-        public TFCDIDDatabase(string _indexDatabasePath, string _databaseDataPrefix) 
+        public TFCDDADatabase(string _gamefilePath) 
         {
-            this._indexDatabasePath = _indexDatabasePath;
-            this._databaseDataPrefixPath = _databaseDataPrefix;
+            this.gamefilePath = _gamefilePath;
+            this.indexMap = new Dictionary<string, DIDIndexHeader>();
+            this.loadedDDAs = new Dictionary<string, byte[]>();
+            Logger.Info($"Initialized TFCDDADatabase on gamefile path {_gamefilePath}");
         }
 
         public void Decrypt() {
+            // first load indices from the ddi file
+            this.loadIndices();
+
+            // load ddas
+            this.loadDDAs();
+        }
+
+        private void loadDDAs() {
+            Logger.Info("Loading DDAs into memory ...");
+            for (var i = 0; i < DDA_FILES_COUNT; i++) {
+                string ddaFile = string.Format("{0}{1:D2}.dda", DDA_FILE, i);
+                string ddaPath = Path.Combine(this.gamefilePath, ddaFile);
+                if (File.Exists(ddaPath)) {
+                    Logger.Info($"Loading DDA file {ddaFile}");
+                    // load dda data in memory
+                    byte[] ddaData = File.ReadAllBytes(ddaPath);
+                    this.loadedDDAs[ddaFile] = ddaData;
+                }
+            }
+        }
+
+
+        private void loadIndices() {
             DIDIndexFileHeader indexHeader = new DIDIndexFileHeader();
-            byte[] uncompressedData = this.loadIndex(ref indexHeader);
+            byte[] uncompressedData = this.loadIndexHeader(ref indexHeader);
+            Logger.Info($"Loading {indexHeader.indicesCount} indices...");
 
             int read = 0;
             using (var uncompressedDataStream = new MemoryStream(uncompressedData))
@@ -65,7 +99,8 @@ namespace TFCGameFilesDecryption
                     read = uncompressedDataStream.Read(indexBuf, 0, DIDIndexHeader.STRUCT_SIZE_BYTES);
                     Debug.Assert(read == DIDIndexHeader.STRUCT_SIZE_BYTES, "unable to read index stream for index = " + i);
 
-                    using (var indexStream = new MemoryStream(indexBuf)) {
+                    using (var indexStream = new MemoryStream(indexBuf))
+                    {
                         byte[] nameBuf = new byte[DIDIndexHeader.NAME_LENGTH];
                         read = indexStream.Read(nameBuf, 0, DIDIndexHeader.NAME_LENGTH);
                         currentIndexHeader.name = System.Text.Encoding.ASCII.GetString(nameBuf.Where(s => s > 0x0).ToArray());
@@ -93,15 +128,18 @@ namespace TFCGameFilesDecryption
 
                         // append database
                         this.indexDatabase[i] = currentIndexHeader;
+                        this.indexMap[currentIndexHeader.name] = this.indexDatabase[i];
                     }
                 }
             }
         }
 
-        private byte[] loadIndex(ref DIDIndexFileHeader loadHeader) {
-            if (!File.Exists(this._indexDatabasePath)) { throw new Exception("Index data file does not exists."); }
+        private byte[] loadIndexHeader(ref DIDIndexFileHeader loadHeader) {
+            if (!File.Exists(Path.Combine(this.gamefilePath, DID_FILE))) { throw new Exception("Index data file does not exists."); }
 
-            using (Stream src = File.OpenRead(this._indexDatabasePath)) {
+            Logger.Debug($"Loading ddi file index header {Path.Combine(this.gamefilePath, DID_FILE)}");
+            using (Stream src = File.OpenRead(Path.Combine(this.gamefilePath, DID_FILE)))
+            {
                 int read = 0;
 
                 // first 16 bytes are first part of md5 checksum
@@ -130,7 +168,7 @@ namespace TFCGameFilesDecryption
                 loadHeader.ulUnpackSize = BitConverter.ToUInt32(unpackSize, 0);
                 // pack size
                 loadHeader.ulPackSize = BitConverter.ToUInt32(packSize, 0);
-                
+
                 // read compressed data
                 byte[] compressedData = new byte[loadHeader.ulPackSize];
                 int len = Convert.ToInt32(loadHeader.ulPackSize);
@@ -150,14 +188,16 @@ namespace TFCGameFilesDecryption
 
                 // decompress the compressed data using zlib
                 byte[] uncompressedData = new byte[loadHeader.ulUnpackSize];
-                using (var deflatedStream = Zlib.Deflate(compressedData)) {
+                using (var deflatedStream = Zlib.Deflate(compressedData))
+                {
                     read = deflatedStream.Read(uncompressedData, 0, Convert.ToInt32(loadHeader.ulUnpackSize));
                     Debug.Assert(read == Convert.ToInt32(loadHeader.ulUnpackSize), "unable to unpack deflated stream");
                 }
 
                 // compute md5 of uncompressed data
                 string computedHash = "";
-                using (var md5 = System.Security.Cryptography.MD5.Create()) {
+                using (var md5 = System.Security.Cryptography.MD5.Create())
+                {
                     computedHash = string.Join("", md5.ComputeHash(new MemoryStream(uncompressedData)).Select(s => s.ToString("x2")));
                 }
                 Debug.Assert(computedHash == loadHeader.strChksumMd5, "uncompressed data md5 checksum validate failed");
