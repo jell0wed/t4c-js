@@ -3,6 +3,8 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -51,12 +53,23 @@ namespace TFCGameFilesDecryption
         public ulong dwDataPack;
     }
 
+    struct DDALoadedSprite {
+        public DIDIndexHeader indexHeader;
+        public DDASpriteHeader spriteHeader;
+        public byte[] loadedChunk;
+    }
+
     class TFCDDADatabase
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
         private const string DID_FILE = "V2DataI.did";
         private const string DDA_FILE = "V2Data";
+
+        private const int COMP_DD = 1;
+        private const int COMP_NCK = 2;
+        private const int COMP_NULL = 3;
+        private const int COMP_ZIP = 9;
 
         private const int XOR_DECRYPTION_KEY = 0x99;
         private const int DDA_FILES_COUNT = 20;
@@ -96,10 +109,11 @@ namespace TFCGameFilesDecryption
             }
 
             DIDIndexHeader indexHeader = this.indicesMap[index];
-            internalLoadSprite(indexHeader);
+            DDALoadedSprite loadedSprite = internalLoadSprite(indexHeader);
+            exportSprite(loadedSprite);
         }
 
-        private void internalLoadSprite(DIDIndexHeader header) {
+        private DDALoadedSprite internalLoadSprite(DIDIndexHeader header) {
             string ddaFile = GenerateDDAFileFromIndex(Convert.ToInt32(header.dwDataFileIndex));
             Debug.Assert(this.loadedDDAs.ContainsKey(ddaFile), $"cannot load dda file from index {Convert.ToInt32(header.dwDataFileIndex)}");
 
@@ -108,6 +122,8 @@ namespace TFCGameFilesDecryption
             int read = 0;
             {
                 var ddaSegmentStream = new MemoryStream(ddaSegmentBuf);
+
+                // load sprite header
                 DDASpriteHeader spriteHeader = new DDASpriteHeader();
                 spriteHeader.dwCompType = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAAA);
                 spriteHeader.flag1 = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1458);
@@ -121,8 +137,71 @@ namespace TFCGameFilesDecryption
                 spriteHeader.ushTransColor = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1234);
                 spriteHeader.dwDataUnpack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xDDCCBBAA);
                 spriteHeader.dwDataPack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xAABBCCDD);
+
+                DDALoadedSprite loadedSprite = new DDALoadedSprite;
+                switch (spriteHeader.dwCompType) {
+                    case COMP_DD:
+                        loadedSprite = this.loadSprite_Raw(header, spriteHeader);
+                        break;
+                    case COMP_NCK:
+                        this.loadSprite_NoColorKey(header, spriteHeader);
+                        break;
+                    case COMP_ZIP:
+                        this.loadSprite_Zip(header, spriteHeader);
+                        break;
+                    case COMP_NULL:
+                        this.loadSprite_Null(header, spriteHeader);
+                        break;
+                }
+
+                return loadedSprite;
             }
         }
+
+        private void exportSprite(DDALoadedSprite loadedSprite) {
+            // export the sprite into a bitmap file
+            Bitmap bmp = new Bitmap(loadedSprite.spriteHeader.dwWidth, loadedSprite.spriteHeader.dwHeight, PixelFormat.Format32bppRgb);
+            int cIndex = 0;
+            for (var i = 0; i < loadedSprite.spriteHeader.dwWidth; i++) {
+                for (var j = 0; j < loadedSprite.spriteHeader.dwHeight; j++) {
+                    byte red = (byte)(loadedSprite.loadedChunk[cIndex + j] * 3);
+                    byte green = (byte)(loadedSprite.loadedChunk[cIndex + j + 1] * 3);
+                    byte blue = (byte)(loadedSprite.loadedChunk[cIndex + j + 2] * 3);
+
+
+                }
+                cIndex += loadedSprite.spriteHeader.dwWidth;
+            }
+        }
+
+        private DDALoadedSprite loadSprite_Raw(DIDIndexHeader indexHeader, DDASpriteHeader spriteHeader)
+        {
+            DDALoadedSprite loadedSprite = new DDALoadedSprite();
+            loadedSprite.indexHeader = indexHeader;
+            loadedSprite.spriteHeader = spriteHeader;
+
+            string ddaFile = GenerateDDAFileFromIndex(Convert.ToInt32(indexHeader.dwDataFileIndex));
+            // read from dda from file offset + sizeof(sprite header)
+            byte[] ddaSegmentBuf = getDDAFileSegment(this.loadedDDAs[ddaFile], Convert.ToInt32(indexHeader.dwFileOffset) + DDASpriteHeader.STRUCT_SIZE_BYTES, Convert.ToInt32(spriteHeader.dwDataPack));
+            byte[] uncompressedChunkBuf = new byte[spriteHeader.dwDataUnpack];
+            if (spriteHeader.dwWidth > 180 || spriteHeader.dwHeight > 180)
+            {
+                // sprite is compressed
+                byte[] compressedChunkBuf = readBytes(new MemoryStream(ddaSegmentBuf), 0, Convert.ToInt32(spriteHeader.dwDataPack));
+                uncompressedChunkBuf = readBytes(Zlib.Deflate(compressedChunkBuf), 0, Convert.ToInt32(spriteHeader.dwDataUnpack)); // never hit??
+            }
+            else
+            {
+                uncompressedChunkBuf = readBytes(new MemoryStream(ddaSegmentBuf), 0, Convert.ToInt32(spriteHeader.dwDataPack)); // shouldnt this be data unpack?? 
+            }
+
+            loadedSprite.loadedChunk = uncompressedChunkBuf;
+            return loadedSprite;
+        }
+
+        private void loadSprite_NoColorKey(DIDIndexHeader indexHeader, DDASpriteHeader spriteHeader) {  }
+        private void loadSprite_Zip(DIDIndexHeader indexHeader, DDASpriteHeader spriteHeader) { }
+        private void loadSprite_Null(DIDIndexHeader indexHeader, DDASpriteHeader spriteHeader) {  }
 
         private byte[] getDDAFileSegment(byte[] ddaBuf, int offset, int len, bool mXor = false) {
             if (!mXor) {
@@ -146,7 +225,7 @@ namespace TFCGameFilesDecryption
             }
         }
 
-        private static byte[] readBytes(MemoryStream s, int offset, int bufSize) {
+        private static byte[] readBytes(Stream s, int offset, int bufSize) {
             byte[] resultBuf = new byte[bufSize];
             int read = s.Read(resultBuf, offset, bufSize);
             Debug.Assert(read == bufSize, "unable to read up to bufSize");

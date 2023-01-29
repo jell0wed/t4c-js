@@ -13,7 +13,7 @@ namespace TFCGameFilesDecryption
             TFCDDADatabase didDatabase = new TFCDDADatabase("..\\..\\..\\..\\..\\gamefiles\\");
             didDatabase.Decrypt();
 
-            didDatabase.LoadSprite("NormalSword");
+            didDatabase.LoadSprite("Black Tile");
         }
     }
 }
