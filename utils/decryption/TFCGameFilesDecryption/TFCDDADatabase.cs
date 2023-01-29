@@ -34,6 +34,23 @@ namespace TFCGameFilesDecryption
         public uint dwThisPosIndex;
     }
 
+    struct DDASpriteHeader {
+        public const int STRUCT_SIZE_BYTES = 10 * 2 + 2 * 4;
+
+        public ushort dwCompType;
+        public ushort flag1;
+        public ushort dwWidth;
+        public ushort dwHeight;
+        public short shOffX1;
+        public short shOffY1;
+        public short shOffX2;
+        public short shOffY2;
+        public ushort ushTransparency;
+        public ushort ushTransColor;
+        public ulong dwDataUnpack;
+        public ulong dwDataPack;
+    }
+
     class TFCDDADatabase
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
@@ -44,17 +61,19 @@ namespace TFCGameFilesDecryption
         private const int XOR_DECRYPTION_KEY = 0x99;
         private const int DDA_FILES_COUNT = 20;
 
+        private RandomTable XOR;
         private readonly string gamefilePath;
 
         private DIDIndexHeader[] indexDatabase;
-        private Dictionary<string, DIDIndexHeader> indexMap;
+        private Dictionary<string, DIDIndexHeader> indicesMap;
         private Dictionary<string, byte[]> loadedDDAs;
 
         public TFCDDADatabase(string _gamefilePath) 
         {
             this.gamefilePath = _gamefilePath;
-            this.indexMap = new Dictionary<string, DIDIndexHeader>();
-            this.loadedDDAs = new Dictionary<string, byte[]>();
+            this.XOR = new RandomTable(4096);
+            this.XOR.CreateRandom(0, 255, 666666);
+
             Logger.Info($"Initialized TFCDDADatabase on gamefile path {_gamefilePath}");
         }
 
@@ -66,10 +85,81 @@ namespace TFCGameFilesDecryption
             this.loadDDAs();
         }
 
+        public void LoadSprite(string index) {
+            if (this.indicesMap == null) {
+                Logger.Error("Indices map arent loaded yet. Make sure to call decrypt first.");
+                throw new Exception("Indices map arent loaded yet. Make sure to call decrypt first.");
+            }
+
+            if (!this.indicesMap.ContainsKey(index)) {
+                throw new Exception($"{index} not found");
+            }
+
+            DIDIndexHeader indexHeader = this.indicesMap[index];
+            internalLoadSprite(indexHeader);
+        }
+
+        private void internalLoadSprite(DIDIndexHeader header) {
+            string ddaFile = GenerateDDAFileFromIndex(Convert.ToInt32(header.dwDataFileIndex));
+            Debug.Assert(this.loadedDDAs.ContainsKey(ddaFile), $"cannot load dda file from index {Convert.ToInt32(header.dwDataFileIndex)}");
+
+            // retrieve sprite header from dda
+            byte[] ddaSegmentBuf = getDDAFileSegment(this.loadedDDAs[ddaFile], Convert.ToInt32(header.dwFileOffset), DDASpriteHeader.STRUCT_SIZE_BYTES, false); 
+            int read = 0;
+            {
+                var ddaSegmentStream = new MemoryStream(ddaSegmentBuf);
+                DDASpriteHeader spriteHeader = new DDASpriteHeader();
+                spriteHeader.dwCompType = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAAA);
+                spriteHeader.flag1 = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1458);
+                spriteHeader.dwWidth = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1234);
+                spriteHeader.dwHeight = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x6242);
+                spriteHeader.shOffX1 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x2355);
+                spriteHeader.shOffY1 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xF6C3);
+                spriteHeader.shOffX2 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAF3);
+                spriteHeader.shOffY2 = (short)(BitConverter.ToInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0xAAAA);
+                spriteHeader.ushTransparency = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x4321);
+                spriteHeader.ushTransColor = (ushort)(BitConverter.ToUInt16(readBytes(ddaSegmentStream, 0, 2), 0) ^ 0x1234);
+                spriteHeader.dwDataUnpack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xDDCCBBAA);
+                spriteHeader.dwDataPack = (ulong)(BitConverter.ToUInt32(readBytes(ddaSegmentStream, 0, 4), 0) ^ 0xAABBCCDD);
+            }
+        }
+
+        private byte[] getDDAFileSegment(byte[] ddaBuf, int offset, int len, bool mXor = false) {
+            if (!mXor) {
+                offset += 4;
+            }
+            using (var ddaStream = new MemoryStream(ddaBuf))
+            {
+                byte[] segmentBuf = new byte[len];
+                ddaStream.Seek(offset, SeekOrigin.Begin);
+                int read = ddaStream.Read(segmentBuf, 0, len);
+                Debug.Assert(read == len);
+
+                if (mXor) {
+                    for (var i = 0; i < len; i++)
+                    {
+                        segmentBuf[i] ^= (byte)(XOR.Values[(offset + i) / 4096]);
+                    }
+                }
+
+                return segmentBuf;
+            }
+        }
+
+        private static byte[] readBytes(MemoryStream s, int offset, int bufSize) {
+            byte[] resultBuf = new byte[bufSize];
+            int read = s.Read(resultBuf, offset, bufSize);
+            Debug.Assert(read == bufSize, "unable to read up to bufSize");
+
+            return resultBuf;
+        }
+
         private void loadDDAs() {
+            this.loadedDDAs = new Dictionary<string, byte[]>();
+
             Logger.Info("Loading DDAs into memory ...");
             for (var i = 0; i < DDA_FILES_COUNT; i++) {
-                string ddaFile = string.Format("{0}{1:D2}.dda", DDA_FILE, i);
+                string ddaFile = GenerateDDAFileFromIndex(i);
                 string ddaPath = Path.Combine(this.gamefilePath, ddaFile);
                 if (File.Exists(ddaPath)) {
                     Logger.Info($"Loading DDA file {ddaFile}");
@@ -80,8 +170,13 @@ namespace TFCGameFilesDecryption
             }
         }
 
+        private static string GenerateDDAFileFromIndex(int i) {
+            return string.Format("{0}{1:D2}.dda", DDA_FILE, i); ;
+        }
 
         private void loadIndices() {
+            this.indicesMap = new Dictionary<string, DIDIndexHeader>();
+
             DIDIndexFileHeader indexHeader = new DIDIndexFileHeader();
             byte[] uncompressedData = this.loadIndexHeader(ref indexHeader);
             Logger.Info($"Loading {indexHeader.indicesCount} indices...");
@@ -128,7 +223,7 @@ namespace TFCGameFilesDecryption
 
                         // append database
                         this.indexDatabase[i] = currentIndexHeader;
-                        this.indexMap[currentIndexHeader.name] = this.indexDatabase[i];
+                        this.indicesMap[currentIndexHeader.name] = this.indexDatabase[i];
                     }
                 }
             }
